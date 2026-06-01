@@ -1,0 +1,8 @@
+{
+  "name": "Monitoramento ACS",
+  "description": "Sistema para acompanhar a produção dos Agentes Comunitários de Saúde (ACS) por unidade e equipe.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
