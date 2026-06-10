@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { mockACSData } from './data';
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { Users, Building2, Activity, Filter, Printer, Upload, Download, ArrowLeft, FileType, CheckCircle2 } from 'lucide-react';
+import { Users, Building2, Activity, Filter, Printer, Upload, Download, ArrowLeft, FileType, CheckCircle2, Search, Calendar } from 'lucide-react';
 import { ACS } from './types';
 
 const strToPixels = (str: string) => str.replace(/\s/g, '').split('').map(Number);
@@ -98,30 +98,41 @@ export default function Dashboard() {
   const [data, setData] = useState<ACS[]>(mockACSData);
   const [unidadeFiltro, setUnidadeFiltro] = useState<string>('');
   const [equipeFiltro, setEquipeFiltro] = useState<string>('');
+  const [profissionalFiltro, setProfissionalFiltro] = useState<string>('');
+  const [mesFiltro, setMesFiltro] = useState<string>('');
   const [importedFiles, setImportedFiles] = useState<{name: string, size: number}[]>([]);
 
   const unidades = useMemo(() => Array.from(new Set(data.map(d => d.unidade))).sort(), [data]);
   const equipes = useMemo(() => Array.from(new Set(data.map(d => d.equipe))).sort(), [data]);
+  const mesesDisponiveis = useMemo(() => {
+    const s = new Set<string>();
+    data.forEach(d => Object.keys(d.producaoMensal).forEach(m => s.add(m)));
+    return Array.from(s).sort();
+  }, [data]);
 
   const dadosFiltrados = useMemo(() => {
     return data.filter(d => 
       (!unidadeFiltro || d.unidade === unidadeFiltro) &&
-      (!equipeFiltro || d.equipe === equipeFiltro)
+      (!equipeFiltro || d.equipe === equipeFiltro) &&
+      (!profissionalFiltro || d.nome.toLowerCase().includes(profissionalFiltro.toLowerCase()))
     );
-  }, [data, unidadeFiltro, equipeFiltro]);
+  }, [data, unidadeFiltro, equipeFiltro, profissionalFiltro]);
+
+  const mesesTable = mesFiltro ? [mesFiltro] : mesesDisponiveis;
 
   const totalACS = dadosFiltrados.length;
-  const totalProducao = dadosFiltrados.reduce((acc, curr) => acc + curr.total, 0);
+  const totalProducao = dadosFiltrados.reduce((acc, curr) => {
+    return acc + mesesTable.reduce((sum, m) => sum + (curr.producaoMensal[m] || 0), 0);
+  }, 0);
   const totalEquipesAtivas = new Set(dadosFiltrados.map(d => d.equipe)).size;
   const totalUnidadesAtivas = new Set(dadosFiltrados.map(d => d.unidade)).size;
 
   const producaoMensalGrafico = useMemo(() => {
-    const meses = ["01/2026", "02/2026", "03/2026", "04/2026", "05/2026"];
-    return meses.map(mes => {
+    return mesesDisponiveis.map(mes => {
       const valor = dadosFiltrados.reduce((acc, curr) => acc + (curr.producaoMensal[mes] || 0), 0);
       return { mes, producao: valor };
     });
-  }, [dadosFiltrados]);
+  }, [dadosFiltrados, mesesDisponiveis]);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -138,7 +149,26 @@ export default function Dashboard() {
         try {
           const parsed = JSON.parse(event.target?.result as string);
           if (Array.isArray(parsed)) {
-            setData(parsed);
+            setData(prev => {
+              const newData = [...prev];
+              parsed.forEach(p => {
+                const existingIdx = newData.findIndex(d => d.nome === p.nome);
+                if (existingIdx !== -1) {
+                  // Merge the existing data with the new ones
+                  newData[existingIdx] = { 
+                    ...newData[existingIdx], 
+                    ...p, 
+                    producaoMensal: { ...newData[existingIdx].producaoMensal, ...p.producaoMensal } 
+                  };
+                  
+                  // Recalculate total after merge
+                  newData[existingIdx].total = Object.values(newData[existingIdx].producaoMensal).reduce((a: any, b: any) => a + (Number(b) || 0), 0);
+                } else {
+                  newData.push(p);
+                }
+              });
+              return newData;
+            });
           }
         } catch (e) {
           console.error("Failed to parse JSON backup");
@@ -234,40 +264,63 @@ export default function Dashboard() {
             <p className="text-slate-400 mt-2 font-mono text-sm tracking-wide">Acompanhamento_e_produção_territorial</p>
           </div>
           
-          <div className="flex flex-wrap gap-3 items-center">
-            <div className="flex gap-4 items-center bg-slate-900/80 p-2 border border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.15)] flex-wrap md:flex-nowrap rounded-none">
-              <Filter className="w-4 h-4 text-cyan-500 mx-2" />
+          <div className="flex flex-col lg:flex-row flex-wrap gap-4 items-start xl:items-center w-full xl:w-auto">
+            <div className="flex gap-2 items-center bg-slate-900/80 p-2 border border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.15)] flex-wrap w-full lg:w-auto rounded-none">
+              <Search className="w-4 h-4 text-cyan-500 mx-1 shrink-0" />
+              <input
+                type="text"
+                placeholder="Busca por profissional..."
+                value={profissionalFiltro}
+                onChange={e => setProfissionalFiltro(e.target.value)}
+                className="bg-transparent text-sm font-mono border-0 focus:ring-0 text-cyan-50 outline-none w-full sm:w-48 placeholder-slate-500"
+              />
+              <div className="w-px h-5 bg-cyan-500/30 hidden sm:block"></div>
+              
+              <Calendar className="w-4 h-4 text-cyan-500 mx-1 shrink-0" />
+              <select 
+                value={mesFiltro} 
+                onChange={e => setMesFiltro(e.target.value)}
+                className="bg-transparent text-sm font-mono border-0 focus:ring-0 text-cyan-50 outline-none cursor-pointer w-32 truncate appearance-none"
+              >
+                <option value="" className="bg-slate-900 text-cyan-400">Todo o período</option>
+                {mesesDisponiveis.map(m => <option key={m} value={m} className="bg-slate-900 text-cyan-400">{m}</option>)}
+              </select>
+              <div className="w-px h-5 bg-cyan-500/30 hidden sm:block"></div>
+              
+              <Filter className="w-4 h-4 text-cyan-500 mx-1 shrink-0" />
               <select 
                 value={unidadeFiltro} 
                 onChange={e => setUnidadeFiltro(e.target.value)}
-                className="bg-transparent text-sm font-mono border-0 focus:ring-0 text-cyan-50 outline-none cursor-pointer w-40 truncate appearance-none"
+                className="bg-transparent text-sm font-mono border-0 focus:ring-0 text-cyan-50 outline-none cursor-pointer w-auto lg:w-40 truncate appearance-none"
               >
                 <option value="" className="bg-slate-900 text-cyan-400">Todas as Unidades</option>
                 {unidades.map(u => <option key={u} value={u} className="bg-slate-900 text-cyan-400">{u.replace('Unidade Basica de Saude ', 'UBS ')}</option>)}
               </select>
-              <div className="w-px h-5 bg-cyan-500/30 hidden md:block"></div>
+              <div className="w-px h-5 bg-cyan-500/30 hidden sm:block"></div>
               <select 
                 value={equipeFiltro} 
                 onChange={e => setEquipeFiltro(e.target.value)}
-                className="bg-transparent text-sm font-mono border-0 focus:ring-0 text-cyan-50 outline-none cursor-pointer w-40 truncate appearance-none"
+                className="bg-transparent text-sm font-mono border-0 focus:ring-0 text-cyan-50 outline-none cursor-pointer w-auto lg:w-40 truncate appearance-none"
               >
                 <option value="" className="bg-slate-900 text-cyan-400">Todas as Equipes</option>
                 {equipes.map(e => <option key={e} value={e} className="bg-slate-900 text-cyan-400">{e}</option>)}
               </select>
             </div>
             
-            <button onClick={() => setCurrentView('import')} className="group flex items-center gap-2 bg-slate-900/80 border border-cyan-500/50 text-cyan-400 px-4 py-2 hover:bg-cyan-950 transition-colors shadow-[0_0_10px_rgba(6,182,212,0.1)] text-xs font-display tracking-widest uppercase">
-              <Upload className="w-4 h-4" />
-              <span className="mt-0.5 group-hover:drop-shadow-[0_0_5px_currentColor]">Import</span>
-            </button>
-            <button onClick={handleExportBackup} className="group flex items-center gap-2 bg-slate-900/80 border border-cyan-500/50 text-cyan-400 px-4 py-2 hover:bg-cyan-950 transition-colors shadow-[0_0_10px_rgba(6,182,212,0.1)] text-xs font-display tracking-widest uppercase">
-              <Download className="w-4 h-4" />
-              <span className="mt-0.5 group-hover:drop-shadow-[0_0_5px_currentColor]">Backup</span>
-            </button>
-            <button onClick={() => window.print()} className="group flex items-center gap-2 bg-cyan-500/10 border border-fuchsia-500/50 text-fuchsia-400 px-4 py-2 hover:bg-fuchsia-950 transition-colors shadow-[0_0_10px_rgba(236,72,153,0.15)] text-xs font-display tracking-widest uppercase">
-              <Printer className="w-4 h-4" />
-              <span className="mt-0.5 group-hover:drop-shadow-[0_0_5px_currentColor]">Print</span>
-            </button>
+            <div className="flex flex-wrap gap-2 w-full lg:w-auto">
+              <button onClick={() => setCurrentView('import')} className="flex-1 lg:flex-none group flex items-center justify-center gap-2 bg-slate-900/80 border border-cyan-500/50 text-cyan-400 px-4 py-2 hover:bg-cyan-950 transition-colors shadow-[0_0_10px_rgba(6,182,212,0.1)] text-xs font-display tracking-widest uppercase">
+                <Upload className="w-4 h-4" />
+                <span className="mt-0.5 group-hover:drop-shadow-[0_0_5px_currentColor]">Import</span>
+              </button>
+              <button onClick={handleExportBackup} className="flex-1 lg:flex-none group flex items-center justify-center gap-2 bg-slate-900/80 border border-cyan-500/50 text-cyan-400 px-4 py-2 hover:bg-cyan-950 transition-colors shadow-[0_0_10px_rgba(6,182,212,0.1)] text-xs font-display tracking-widest uppercase">
+                <Download className="w-4 h-4" />
+                <span className="mt-0.5 group-hover:drop-shadow-[0_0_5px_currentColor]">Backup</span>
+              </button>
+              <button onClick={() => window.print()} className="flex-1 lg:flex-none group flex items-center justify-center gap-2 bg-cyan-500/10 border border-fuchsia-500/50 text-fuchsia-400 px-4 py-2 hover:bg-fuchsia-950 transition-colors shadow-[0_0_10px_rgba(236,72,153,0.15)] text-xs font-display tracking-widest uppercase">
+                <Printer className="w-4 h-4" />
+                <span className="mt-0.5 group-hover:drop-shadow-[0_0_5px_currentColor]">Print</span>
+              </button>
+            </div>
           </div>
         </header>
 
@@ -280,7 +333,9 @@ export default function Dashboard() {
                 {unidadeFiltro && `Unidade: ${unidadeFiltro}`}
                 {unidadeFiltro && equipeFiltro && ' | '}
                 {equipeFiltro && `Equipe: ${equipeFiltro}`}
-                {!unidadeFiltro && !equipeFiltro && 'Geral'}
+                {profissionalFiltro && ` | Profissional: ${profissionalFiltro}`}
+                {mesFiltro && ` | Período: ${mesFiltro}`}
+                {!unidadeFiltro && !equipeFiltro && !profissionalFiltro && !mesFiltro && 'Geral'}
               </p>
             </div>
         </div>
@@ -366,18 +421,16 @@ export default function Dashboard() {
                   <tr>
                     <th className="px-4 py-3 font-normal">Profissional</th>
                     <th className="px-4 py-3 font-normal hidden md:table-cell">Equipe</th>
-                    <th className="px-4 py-3 font-normal text-right">01/2026</th>
-                    <th className="px-4 py-3 font-normal text-right">02/2026</th>
-                    <th className="px-4 py-3 font-normal text-right">03/2026</th>
-                    <th className="px-4 py-3 font-normal text-right">04/2026</th>
-                    <th className="px-4 py-3 font-normal text-right">05/2026</th>
+                    {mesesTable.map(m => (
+                      <th key={m} className="px-4 py-3 font-normal text-right">{m}</th>
+                    ))}
                     <th className="px-4 py-3 font-normal text-right text-fuchsia-400">Total</th>
                   </tr>
                 </thead>
                 <tbody>
                   {dadosFiltrados.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="px-4 py-8 text-center text-slate-500 uppercase tracking-widest">
+                      <td colSpan={mesesTable.length + 3} className="px-4 py-8 text-center text-slate-500 uppercase tracking-widest">
                         WARN: NO_DATA_FOUND
                       </td>
                     </tr>
@@ -392,12 +445,12 @@ export default function Dashboard() {
                           <p className="text-slate-300 truncate max-w-[200px]">{acs.equipe}</p>
                           <p className="text-xs text-slate-500 truncate max-w-[200px]">{acs.unidade.replace('Unidade Basica de Saude ', 'UBS ')}</p>
                         </td>
-                        <td className="px-4 py-3 text-right text-slate-400">{acs.producaoMensal['01/2026']}</td>
-                        <td className="px-4 py-3 text-right text-slate-400">{acs.producaoMensal['02/2026']}</td>
-                        <td className="px-4 py-3 text-right text-slate-400">{acs.producaoMensal['03/2026']}</td>
-                        <td className="px-4 py-3 text-right text-slate-400">{acs.producaoMensal['04/2026']}</td>
-                        <td className="px-4 py-3 text-right text-slate-400">{acs.producaoMensal['05/2026']}</td>
-                        <td className="px-4 py-3 text-right font-bold text-fuchsia-400">{acs.total}</td>
+                        {mesesTable.map(m => (
+                          <td key={m} className="px-4 py-3 text-right text-slate-400">{acs.producaoMensal[m] || 0}</td>
+                        ))}
+                        <td className="px-4 py-3 text-right font-bold text-fuchsia-400">
+                          {mesesTable.reduce((sum, m) => sum + (acs.producaoMensal[m] || 0), 0)}
+                        </td>
                       </tr>
                     ))
                   )}
