@@ -4,6 +4,9 @@ import { Card, CardContent, CardHeader, CardTitle } from './components/ui';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { Users, Building2, Activity, Filter, Printer, Upload, Download, ArrowLeft, FileType, CheckCircle2, Search, Calendar } from 'lucide-react';
 import { ACS } from './types';
+import * as pdfjsLib from 'pdfjs-dist';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
 
 const strToPixels = (str: string) => str.replace(/\s/g, '').split('').map(Number);
 
@@ -134,7 +137,87 @@ export default function Dashboard() {
     });
   }, [dadosFiltrados, mesesDisponiveis]);
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const processExtractedText = (text: string) => {
+    const lines = text.trim().split('\n');
+    let currentUnidade = '';
+    let currentEquipe = '';
+    const results: ACS[] = [];
+    let idCounter = Date.now();
+    let currentMonths: string[] = ["01/2026", "02/2026", "03/2026", "04/2026", "05/2026"];
+
+    for (const line of lines) {
+      if (line.trim() === '') continue;
+      if (line.toLowerCase().startsWith('total')) continue;
+
+      if (line.includes('Profissional') && line.match(/\d{2}\/\d{4}/)) {
+        const monthMatches = line.match(/\d{2}\/\d{4}/g);
+        if (monthMatches && monthMatches.length > 0) {
+          currentMonths = monthMatches;
+        }
+        continue;
+      }
+
+      if (line.startsWith('Unidade')) {
+        currentUnidade = line.trim();
+      } else if (line.startsWith('ESF ') || line.startsWith('EAP ')) {
+        currentEquipe = line.trim();
+      } else {
+        const parts = line.split(' ');
+        const numbers = [];
+        let nameParts = [];
+        
+        for (const part of parts) {
+          if (part.match(/^[0-9]+(\.[0-9]+)*$/)) {
+            numbers.push(parseInt(part.replace(/\./g, ''), 10));
+          } else {
+            nameParts.push(part);
+          }
+        }
+        
+        if (numbers.length >= currentMonths.length + 1) {
+          const nome = nameParts.join(' ').trim();
+          const nums = numbers.slice(numbers.length - (currentMonths.length + 1));
+          
+          const producaoMensal: Record<string, number> = {};
+          currentMonths.forEach((m, idx) => {
+            producaoMensal[m] = nums[idx];
+          });
+          
+          results.push({
+            id: (idCounter++).toString(),
+            nome,
+            unidade: currentUnidade,
+            equipe: currentEquipe || currentUnidade,
+            producaoMensal,
+            total: nums[nums.length - 1]
+          });
+        }
+      }
+    }
+    return results;
+  };
+
+  const integrateParsedData = (parsed: any[]) => {
+    setData(prev => {
+      const newData = [...prev];
+      parsed.forEach(p => {
+        const existingIdx = newData.findIndex(d => d.nome === p.nome);
+        if (existingIdx !== -1) {
+          newData[existingIdx] = { 
+            ...newData[existingIdx], 
+            ...p, 
+            producaoMensal: { ...newData[existingIdx].producaoMensal, ...p.producaoMensal } 
+          };
+          newData[existingIdx].total = Object.values(newData[existingIdx].producaoMensal).reduce((a: any, b: any) => a + (Number(b) || 0), 0);
+        } else {
+          newData.push(p);
+        }
+      });
+      return newData;
+    });
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
     
@@ -142,39 +225,72 @@ export default function Dashboard() {
     const newFiles = fileArray.map(f => ({ name: f.name, size: f.size }));
     setImportedFiles(prev => [...prev, ...newFiles]);
     
-    const jsonFile = fileArray.find(f => f.name.endsWith('.json'));
-    if (jsonFile) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        try {
-          const parsed = JSON.parse(event.target?.result as string);
-          if (Array.isArray(parsed)) {
-            setData(prev => {
-              const newData = [...prev];
-              parsed.forEach(p => {
-                const existingIdx = newData.findIndex(d => d.nome === p.nome);
-                if (existingIdx !== -1) {
-                  // Merge the existing data with the new ones
-                  newData[existingIdx] = { 
-                    ...newData[existingIdx], 
-                    ...p, 
-                    producaoMensal: { ...newData[existingIdx].producaoMensal, ...p.producaoMensal } 
-                  };
-                  
-                  // Recalculate total after merge
-                  newData[existingIdx].total = Object.values(newData[existingIdx].producaoMensal).reduce((a: any, b: any) => a + (Number(b) || 0), 0);
-                } else {
-                  newData.push(p);
-                }
-              });
-              return newData;
-            });
+    for (const file of fileArray) {
+      if (file.name.endsWith('.json')) {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          try {
+            const parsed = JSON.parse(event.target?.result as string);
+            if (Array.isArray(parsed)) integrateParsedData(parsed);
+          } catch (e) {
+            console.error("Failed to parse JSON backup");
           }
-        } catch (e) {
-          console.error("Failed to parse JSON backup");
-        }
-      };
-      reader.readAsText(jsonFile);
+        };
+        reader.readAsText(file);
+      } else if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+          try {
+            const typedarray = new Uint8Array(event.target?.result as ArrayBuffer);
+            const pdf = await pdfjsLib.getDocument({ data: typedarray }).promise;
+            let fullText = '';
+            
+            for (let i = 1; i <= pdf.numPages; i++) {
+              const page = await pdf.getPage(i);
+              const textContent = await page.getTextContent();
+              
+              const items = textContent.items;
+              // Sort items by Y (top to bottom) then X (left to right)
+              items.sort((a: any, b: any) => {
+                if (Math.abs(b.transform[5] - a.transform[5]) > 5) {
+                  return b.transform[5] - a.transform[5];
+                }
+                return a.transform[4] - b.transform[4];
+              });
+              
+              let reconstructed = '';
+              let lastY = -1;
+              for (const item of items) {
+                  if (lastY === -1) lastY = item.transform[5];
+                  if (Math.abs(item.transform[5] - lastY) > 5) {
+                      reconstructed += '\n';
+                      lastY = item.transform[5];
+                  } else if (reconstructed.length > 0 && !reconstructed.endsWith('\n') && !reconstructed.endsWith(' ')) {
+                      reconstructed += ' ';
+                  }
+                  reconstructed += (item as any).str;
+              }
+              
+              fullText += reconstructed + '\n';
+            }
+
+            const parsed = processExtractedText(fullText);
+            if (parsed.length > 0) integrateParsedData(parsed);
+          } catch (e) {
+            console.error("Failed to parse PDF", e);
+          }
+        };
+        reader.readAsArrayBuffer(file);
+      } else {
+        // Assume text-based like csv, txt for generic matching
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          const text = event.target?.result as string;
+          const parsed = processExtractedText(text);
+          if (parsed.length > 0) integrateParsedData(parsed);
+        };
+        reader.readAsText(file);
+      }
     }
   };
 
@@ -232,7 +348,7 @@ export default function Dashboard() {
           </Card>
 
           {importedFiles.length > 0 && (
-            <div className="space-y-3 font-mono">
+            <div className="space-y-3 font-mono mt-6">
               <h4 className="font-display font-medium text-cyan-400 tracking-widest uppercase text-sm border-b border-cyan-500/30 pb-2">Módulos Carregados ({importedFiles.length})</h4>
               {importedFiles.map((file, i) => (
                 <div key={i} className="flex items-center gap-3 p-3 bg-slate-900 border border-cyan-500/30 shadow-[0_0_10px_rgba(6,182,212,0.1)] rounded-none">
@@ -244,6 +360,14 @@ export default function Dashboard() {
                   <CheckCircle2 className="w-5 h-5 text-fuchsia-500 drop-shadow-[0_0_5px_rgba(236,72,153,0.8)]" />
                 </div>
               ))}
+
+              <button 
+                onClick={() => setCurrentView('dashboard')} 
+                className="mt-8 w-full flex items-center justify-center gap-2 bg-slate-900/80 border border-cyan-500/50 text-cyan-400 px-4 py-4 hover:bg-cyan-950 transition-colors shadow-[0_0_15px_rgba(6,182,212,0.2)] text-sm font-display tracking-widest uppercase font-bold"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span>Finalizar e Retornar ao Dashboard</span>
+              </button>
             </div>
           )}
         </div>
